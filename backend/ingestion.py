@@ -8,10 +8,13 @@ import re
 import json
 import hashlib
 import datetime
+import tempfile
+import glob
 from typing import Optional
 import yt_dlp
 from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound
 import requests
+import assemblyai as aai
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from rag_chain import get_vectorstore, get_embeddings
 
@@ -205,16 +208,46 @@ def fetch_instagram_metadata(url: str) -> dict:
     }
 
 
+def _download_instagram_audio(url: str, tmpdir: str) -> Optional[str]:
+    """Download Instagram Reel audio to tmpdir, return file path or None."""
+    ydl_opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "format": "bestaudio/best",
+        "outtmpl": f"{tmpdir}/audio.%(ext)s",
+        "postprocessors": [{
+            "key": "FFmpegExtractAudio",
+            "preferredcodec": "mp3",
+            "preferredquality": "64",
+        }],
+        "geo_bypass": True,
+    }
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        ydl.download([url])
+    files = glob.glob(f"{tmpdir}/audio.*")
+    return files[0] if files else None
+
+
 def fetch_instagram_transcript(meta: dict) -> str:
-    """
-    Instagram Reels don't have transcripts via public API.
-    We use the description/caption as a proxy and note it.
-    For production: use AssemblyAI or Whisper on the downloaded audio.
-    """
+    """Transcribe Instagram Reel audio via AssemblyAI; fall back to caption."""
+    api_key = os.getenv("ASSEMBLYAI_API_KEY", "")
+    if api_key:
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                audio_path = _download_instagram_audio(meta["url"], tmpdir)
+                if audio_path:
+                    aai.settings.api_key = api_key
+                    transcriber = aai.Transcriber()
+                    result = transcriber.transcribe(audio_path)
+                    if result.text and result.text.strip():
+                        return result.text
+        except Exception as e:
+            print(f"[AssemblyAI] Transcription failed: {e}")
+
     description = meta.get("description", "")
     if description:
         return f"[Caption/Description]: {description}"
-    return "[No transcript available — Instagram Reels require Whisper/AssemblyAI for audio transcription in production]"
+    return "[No transcript available]"
 
 
 def compute_engagement_rate(views: int, likes: int, comments: int) -> float:
