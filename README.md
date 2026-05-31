@@ -58,7 +58,7 @@ A production-grade RAG (Retrieval-Augmented Generation) chatbot that ingests You
 
 - Python 3.11+
 - Node 18+
-- OpenAI API key
+- Cohere API key
 
 ### Backend
 
