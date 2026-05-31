@@ -280,7 +280,7 @@ def chunk_and_embed(transcript: str, metadata: dict, video_label: str) -> int:
     docs_ids = []
 
     for i, chunk in enumerate(chunks):
-        chunk_id = hashlib.md5(f"{video_label}_{i}_{chunk[:50]}".encode()).hexdigest()
+        chunk_id = hashlib.sha256(f"{video_label}_{i}_{chunk[:50]}".encode()).hexdigest()[:32]
         docs_text.append(chunk)
         docs_meta.append({
             "video_id": video_label,

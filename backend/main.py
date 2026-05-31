@@ -11,16 +11,37 @@ import hashlib
 from typing import AsyncGenerator, Optional
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from dotenv import load_dotenv
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 
 from ingestion import ingest_video, get_video_metadata
 from rag_chain import build_rag_chain, get_vectorstore, chat_with_memory
 
 load_dotenv()
+
+INGEST_RATE  = os.getenv("RATE_LIMIT_INGEST",  "10/minute")
+CHAT_RATE    = os.getenv("RATE_LIMIT_CHAT",    "30/minute")
+
+
+def _creator_key(request: Request) -> str:
+    """Rate-limit key: creator name from body when available, else remote IP."""
+    try:
+        # body is already parsed by FastAPI; access via request.state if set,
+        # otherwise fall back to IP so the limiter never blocks on missing data.
+        body = request.state.body if hasattr(request.state, "body") else {}
+        creator = (body.get("creator") or "").strip().lower()
+        return creator if creator else get_remote_address(request)
+    except Exception:
+        return get_remote_address(request)
+
+
+limiter = Limiter(key_func=_creator_key)
 
 # In-memory session store: session_id -> chat_history list
 session_store: dict[str, list] = {}
@@ -32,6 +53,8 @@ async def lifespan(app: FastAPI):
     print("🛑 Shutting down...")
 
 app = FastAPI(title="RAG Video Chatbot", lifespan=lifespan)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 app.add_middleware(
     CORSMiddleware,
@@ -40,6 +63,16 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def _cache_body(request: Request, call_next):
+    """Pre-parse JSON body into request.state so _creator_key can read it."""
+    try:
+        request.state.body = await request.json()
+    except Exception:
+        request.state.body = {}
+    return await call_next(request)
 
 
 # ── Request / Response Models ──────────────────────────────────────────────
@@ -80,7 +113,8 @@ async def health():
 
 
 @app.post("/ingest")
-async def ingest(req: IngestRequest):
+@limiter.limit(INGEST_RATE)
+async def ingest(request: Request, req: IngestRequest):
     """
     Ingest two video URLs → pull metadata + transcript →
     chunk + embed → store in ChromaDB.
@@ -99,7 +133,8 @@ async def ingest(req: IngestRequest):
 
 
 @app.post("/chat/stream")
-async def chat_stream(req: ChatRequest):
+@limiter.limit(CHAT_RATE)
+async def chat_stream(request: Request, req: ChatRequest):
     """
     Streaming RAG chat endpoint.
     Maintains per-session memory; returns SSE chunks.
