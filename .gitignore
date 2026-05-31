@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.pyc
+.env
+chroma_db/
+*.egg-info/
+dist/
+build/
+.venv/
+
+# Node
+node_modules/
+frontend/build/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
